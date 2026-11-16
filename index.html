@@ -23,9 +23,12 @@
     .sub { color: var(--hint); font-size: 13px; margin-bottom: 18px; line-height: 1.4; }
     .status {
       background: rgba(46,166,255,0.12); border: 1px solid rgba(46,166,255,0.35);
-      border-radius: 10px; padding: 10px 12px; margin-bottom: 16px; font-size: 13px;
+      border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; font-size: 13px;
     }
     .status.empty { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.1); color: var(--hint); }
+    .status.ok { background: rgba(60,200,120,0.12); border-color: rgba(60,200,120,0.4); }
+    .status.err { background: rgba(255,90,90,0.1); border-color: rgba(255,90,90,0.35); }
+    .note { font-size: 12px; color: var(--hint); margin-bottom: 14px; line-height: 1.4; min-height: 1em; }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -42,16 +45,12 @@
       text-align: center;
     }
     .card:hover { transform: translateY(-2px); border-color: rgba(232,184,74,0.45); }
-    .card.selected {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 2px rgba(232,184,74,0.35);
-    }
+    .card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(232,184,74,0.35); }
     .icon {
-      width: 88px; height: 88px;
-      border-radius: 12px;
+      width: 88px; height: 88px; border-radius: 12px;
       background: linear-gradient(145deg, #2a2a32, #16161c);
       display: flex; align-items: center; justify-content: center;
-      overflow: hidden;
+      overflow: hidden; font-size: 34px;
     }
     .icon img { width: 78%; height: 78%; object-fit: contain; }
     .name { font-weight: 700; font-size: 14px; }
@@ -63,144 +62,284 @@
     }
     button.sec { background: #33333f; }
     button:disabled { opacity: 0.45; cursor: default; }
-    .foot { margin-top: 24px; font-size: 11px; color: var(--hint); line-height: 1.4; }
+    .foot { margin-top: 24px; font-size: 11px; color: var(--hint); line-height: 1.5; }
     code { background: #222; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
   </style>
 </head>
 <body>
   <h1>🎨 Паки текстур</h1>
-  <p class="sub">Выбери набор фигур для Chaos Chess. Выбор сохраняется на этом сайте и передаётся в игру.</p>
+  <p class="sub">Выбери набор фигур для Chaos Chess. Если в паке нет какой-то фигуры, игра возьмёт её из своей папки <code>figures/</code>.</p>
   <div id="status" class="status empty">Загрузка…</div>
+  <div id="note" class="note"></div>
   <div id="grid" class="grid"></div>
   <div class="actions">
-    <button type="button" id="btn-apply" disabled>Применить в игре</button>
+    <button type="button" id="btn-apply">Применить в игре</button>
     <button type="button" id="btn-reset" class="sec">Сбросить (стандарт)</button>
   </div>
   <p class="foot">
-    Паки лежат в <code>packs/&lt;id&gt;/</code>. Добавь папку с <code>pack.json</code> и файлами, затем допиши пак в <code>packs.json</code>.
-    Иконка пака — случайная текстура из него (меняется при каждом заходе).
+    Паки лежат в <code>packs/&lt;id&gt;/</code>. Достаточно положить туда картинки (<code>king.png</code>, <code>queen.png</code>, <code>rook.png</code>, <code>bishop.png</code>, <code>knight.png</code>, <code>pawn.png</code>, <code>checker.png</code> …).
+    Список паков берётся из <code>packs.json</code>; если его нет — страница сама найдёт папки в <code>packs/</code> через GitHub.
+    Иконка пака — случайная текстура из него.
   </p>
 
 <script>
 (function(){
-  const STORAGE_KEY = 'chaos_tex_pack';
-  // Куда возвращаться в игру. Можно передать ?return=URL
-  const params = new URLSearchParams(location.search);
-  const RETURN_URL = params.get('return') || 'https://darkstalke5r.github.io/ChessRandom/';
+  'use strict';
+  var STORAGE_KEY = 'chaos_tex_pack';
+  var DEFAULT_GAME = 'https://darkstalke5r.github.io/ChessRandom/';
+  var DEFAULT_REPO = { owner: 'darkstalke5r', repo: 'Slugebniy-TexturesCore-ChessRandom' };
+  var IMG_RE = /\.(png|webp|svg|jpe?g|gif)$/i;
+  var SKIP_FILES = /^(pack\.json|figures\.json|packs\.json)$/i;
 
-  const statusEl = document.getElementById('status');
-  const grid = document.getElementById('grid');
-  const btnApply = document.getElementById('btn-apply');
-  const btnReset = document.getElementById('btn-reset');
+  var params = new URLSearchParams(location.search);
+  var RETURN_URL = DEFAULT_GAME;
+  (function(){
+    var r = params.get('return');
+    if (r && /^https?:\/\//i.test(r)) RETURN_URL = r;
+  })();
 
-  let packs = [];
-  let selected = null;
+  var statusEl = document.getElementById('status');
+  var noteEl = document.getElementById('note');
+  var grid = document.getElementById('grid');
+  var btnApply = document.getElementById('btn-apply');
+  var btnReset = document.getElementById('btn-reset');
 
+  var packs = [];
+  var selected = null;
+  var iconCache = {};
+  var sending = false;
+
+  function setStatus(text, cls){ statusEl.className = 'status ' + (cls || ''); statusEl.textContent = text; }
+  function setNote(text){ noteEl.textContent = text || ''; }
+
+  /* ---------- сохранённый выбор ---------- */
   function loadSaved(){
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
     catch(e){ return null; }
   }
-  function savePack(pack){
-    if(!pack){
-      try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
-      selected = null;
-    } else {
-      const base = new URL(pack.path, location.href).href;
-      selected = {
-        id: pack.id,
-        name: pack.name,
-        base: base.endsWith('/') ? base : base + '/',
-        map: pack.map || {},
-        files: pack.files || []
-      };
-      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(selected)); }catch(e){}
-    }
+  function persist(){
+    try {
+      if (selected) localStorage.setItem(STORAGE_KEY, JSON.stringify(selected));
+      else localStorage.removeItem(STORAGE_KEY);
+    } catch(e){}
+  }
+  function buildSelected(pack){
+    var base = new URL(pack.path, location.href).href;
+    return {
+      id: pack.id,
+      name: pack.name,
+      base: base.endsWith('/') ? base : base + '/',
+      map: pack.map || {},
+      files: pack.files || []
+    };
+  }
+  function choose(pack){
+    selected = pack ? buildSelected(pack) : null;
+    persist();
     updateStatus();
     render();
   }
-
   function updateStatus(){
-    if(!selected){
-      statusEl.className = 'status empty';
-      statusEl.textContent = 'Сейчас: стандартные фигуры игры (пак не выбран)';
-      btnApply.disabled = true;
+    if (!selected) {
+      setStatus('Сейчас: стандартные фигуры игры (пак не выбран)', 'empty');
+      btnApply.textContent = 'Вернуть стандарт в игре';
     } else {
-      statusEl.className = 'status';
-      statusEl.textContent = 'Выбрано: «' + selected.name + '» (' + selected.id + ')';
-      btnApply.disabled = false;
+      setStatus('Выбрано: «' + selected.name + '» (' + selected.id + ')', '');
+      btnApply.textContent = 'Применить в игре';
     }
   }
 
-  function randomIcon(pack){
-    const files = pack.files || [];
-    if(!files.length) return null;
-    const f = files[Math.floor(Math.random() * files.length)];
-    return pack.path + (pack.path.endsWith('/') ? '' : '/') + f;
+  /* ---------- сеть ---------- */
+  function fetchJSON(url){
+    return fetch(url, { cache: 'no-store' }).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function(t){
+      try { return JSON.parse(t); }
+      catch(e){ throw new Error('не JSON'); }
+    });
+  }
+  function repoInfo(){
+    var m = location.hostname.match(/^([^.]+)\.github\.io$/i);
+    var seg = location.pathname.split('/').filter(Boolean)[0];
+    if (m && seg && !/\.html?$/i.test(seg)) return { owner: m[1], repo: seg };
+    return DEFAULT_REPO;
+  }
+  function ghList(path){
+    var r = repoInfo();
+    return fetchJSON('https://api.github.com/repos/' + r.owner + '/' + r.repo + '/contents/' + path);
   }
 
+  /* ---------- список паков ---------- */
+  function normalize(p){
+    if (!p || typeof p !== 'object') return null;
+    var id = String(p.id || p.name || '').trim();
+    if (!id) return null;
+    var path = p.path || ('packs/' + id + '/');
+    if (!path.endsWith('/')) path += '/';
+    return {
+      id: id,
+      name: p.name || id,
+      desc: p.desc || p.description || '',
+      path: path,
+      files: Array.isArray(p.files) ? p.files.slice() : [],
+      map: (p.map && typeof p.map === 'object') ? p.map : {}
+    };
+  }
+
+  // дополняем пак данными из pack.json и (если нет списка файлов) листингом папки через GitHub
+  function enrich(pack){
+    var chain = Promise.resolve();
+    if (!pack.files.length || !Object.keys(pack.map).length) {
+      chain = chain.then(function(){
+        return fetchJSON(pack.path + 'pack.json').then(function(j){
+          if (j.name && pack.name === pack.id) pack.name = j.name;
+          if (j.desc || j.description) pack.desc = pack.desc || j.desc || j.description;
+          if (Array.isArray(j.files) && !pack.files.length) pack.files = j.files.slice();
+          if (j.map && typeof j.map === 'object' && !Object.keys(pack.map).length) pack.map = j.map;
+        }).catch(function(){});
+      });
+    }
+    chain = chain.then(function(){
+      if (pack.files.length) return;
+      var dir = pack.path.replace(/^\.?\//, '').replace(/\/$/, '');
+      return ghList(dir).then(function(list){
+        pack.files = (list || []).filter(function(f){
+          return f.type === 'file' && IMG_RE.test(f.name) && !SKIP_FILES.test(f.name);
+        }).map(function(f){ return f.name; });
+      }).catch(function(){});
+    });
+    return chain.then(function(){ return pack; });
+  }
+
+  function discover(){
+    // 1) packs.json
+    return fetchJSON('packs.json').then(function(data){
+      var arr = Array.isArray(data) ? data : (data && data.packs) || [];
+      return { list: arr, source: 'packs.json' };
+    }).catch(function(err){
+      // 2) автопоиск папок в packs/ через GitHub API
+      return ghList('packs').then(function(list){
+        var arr = (list || []).filter(function(f){ return f.type === 'dir'; })
+          .map(function(f){ return { id: f.name }; });
+        return { list: arr, source: 'github', why: err.message };
+      });
+    });
+  }
+
+  function loadPacks(){
+    discover().then(function(res){
+      var list = res.list.map(normalize).filter(Boolean);
+      return Promise.all(list.map(enrich)).then(function(full){
+        packs = full;
+        var saved = loadSaved();
+        selected = saved && saved.base ? saved : null;
+        if (res.source === 'github') setNote('packs.json не найден (' + res.why + ') — паки найдены автоматически в папке packs/.');
+        else setNote('');
+        updateStatus();
+        render();
+        if (!packs.length) {
+          setNote('Паки не найдены. Создай папку packs/<id>/ с картинками или добавь packs.json.');
+        }
+      });
+    }).catch(function(err){
+      selected = loadSaved();
+      updateStatus();
+      packs = [];
+      render();
+      setStatus('Паки не найдены: нет packs.json и не удалось прочитать папку packs/ (' + err.message + ').', 'err');
+      setNote('Игра продолжит работать со стандартными фигурами. Добавь packs.json рядом с этой страницей или папку packs/ в репозиторий.');
+    });
+  }
+
+  /* ---------- отрисовка ---------- */
+  function iconFor(pack){
+    if (iconCache[pack.id] !== undefined) return iconCache[pack.id];
+    var files = pack.files.filter(function(f){ return IMG_RE.test(f); });
+    var src = files.length ? pack.path + files[Math.floor(Math.random() * files.length)] : null;
+    iconCache[pack.id] = src;
+    return src;
+  }
   function render(){
     grid.innerHTML = '';
-    packs.forEach(pack => {
-      const card = document.createElement('div');
+    packs.forEach(function(pack){
+      var card = document.createElement('div');
       card.className = 'card' + (selected && selected.id === pack.id ? ' selected' : '');
-      const icon = document.createElement('div');
+      var icon = document.createElement('div');
       icon.className = 'icon';
-      const src = randomIcon(pack);
-      if(src){
-        const img = document.createElement('img');
+      var src = iconFor(pack);
+      if (src) {
+        var img = document.createElement('img');
         img.src = src;
         img.alt = pack.name;
-        img.onerror = ()=>{ img.remove(); icon.textContent = '♟'; };
+        img.onerror = function(){ img.remove(); icon.textContent = '♟'; };
         icon.appendChild(img);
       } else icon.textContent = '♟';
-      const name = document.createElement('div');
+      var name = document.createElement('div');
       name.className = 'name';
       name.textContent = pack.name;
-      const desc = document.createElement('div');
+      var desc = document.createElement('div');
       desc.className = 'desc';
       desc.textContent = pack.desc || '';
-      card.appendChild(icon);
-      card.appendChild(name);
-      card.appendChild(desc);
-      card.onclick = ()=> savePack(pack);
+      card.appendChild(icon); card.appendChild(name); card.appendChild(desc);
+      card.onclick = function(){ choose(pack); };
       grid.appendChild(card);
     });
   }
 
-  btnReset.onclick = ()=> savePack(null);
-
-  btnApply.onclick = ()=>{
-    if(!selected) return;
-    // Передаём выбор в игру через hash (работает между разными GitHub Pages)
-    const payload = {
-      id: selected.id,
-      name: selected.name,
-      base: selected.base,
-      map: selected.map || {}
-    };
-    let b64;
-    try {
-      b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
-        .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-    } catch(e){ alert('Не удалось закодировать выбор'); return; }
-    const url = RETURN_URL.replace(/#.*$/,'') + '#texpack=' + b64;
+  /* ---------- связь с игрой ---------- */
+  function b64url(obj){
+    return btoa(unescape(encodeURIComponent(JSON.stringify(obj))))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function redirectToGame(){
+    var url = RETURN_URL.replace(/#.*$/, '') + '#texpack=' + (selected ? b64url(selected) : 'reset');
     location.href = url;
-  };
+  }
 
-  fetch('packs.json', { cache: 'no-store' })
-    .then(r => r.json())
-    .then(data => {
-      packs = (data && data.packs) || [];
-      const saved = loadSaved();
-      if(saved && packs.some(p => p.id === saved.id)) selected = saved;
-      else selected = saved; // keep even if list changed
-      updateStatus();
-      render();
-    })
-    .catch(err => {
-      statusEl.className = 'status empty';
-      statusEl.textContent = 'Не удалось загрузить packs.json: ' + err.message;
-    });
+  // Порядок: 1) postMessage во вкладку-игру (она нас открыла) → ждём подтверждение;
+  //          2) нет подтверждения / нет вкладки → переход в игру с #texpack=… в адресе.
+  // Параллельно выбор лежит в localStorage (общий, если игра на том же github.io).
+  function sendToGame(){
+    if (sending) return;
+    sending = true;
+    persist();
+    var payload = { type: 'chaos-texpack', pack: selected };
+    var done = false;
+    var targetOrigin = '*';
+    try { targetOrigin = new URL(RETURN_URL).origin; } catch(e){}
+
+    function onAck(e){
+      if (!e.data || e.data.type !== 'chaos-texpack-ack') return;
+      done = true;
+      window.removeEventListener('message', onAck);
+      sending = false;
+      setStatus('✅ Применено в игре' + (selected ? ': «' + selected.name + '»' : ' (стандарт)') + '. Можно вернуться во вкладку с игрой.', 'ok');
+      try { window.close(); } catch(_){}
+    }
+
+    var hasOpener = false;
+    try { hasOpener = !!(window.opener && !window.opener.closed); } catch(e){}
+    if (hasOpener) {
+      window.addEventListener('message', onAck);
+      try { window.opener.postMessage(payload, targetOrigin); } catch(e){}
+      setTimeout(function(){
+        if (done) return;
+        window.removeEventListener('message', onAck);
+        sending = false;
+        redirectToGame();
+      }, 900);
+    } else {
+      sending = false;
+      redirectToGame();
+    }
+  }
+
+  btnApply.onclick = sendToGame;
+  btnReset.onclick = function(){ choose(null); };
+
+  updateStatus();
+  loadPacks();
 })();
 </script>
 </body>
