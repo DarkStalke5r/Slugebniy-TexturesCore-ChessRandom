@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chaos Chess — Текстуры</title>
+  <style>
+    :root {
+      --bg: #121214;
+      --card: #1c1c22;
+      --text: #f2f2f7;
+      --hint: #8e8e93;
+      --accent: #e8b84a;
+      --btn: #2aabee;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh; padding: 20px 16px 40px;
+    }
+    h1 { font-size: 22px; margin-bottom: 6px; }
+    .sub { color: var(--hint); font-size: 13px; margin-bottom: 18px; line-height: 1.4; }
+    .status {
+      background: rgba(46,166,255,0.12); border: 1px solid rgba(46,166,255,0.35);
+      border-radius: 10px; padding: 10px 12px; margin-bottom: 16px; font-size: 13px;
+    }
+    .status.empty { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.1); color: var(--hint); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 14px;
+      padding: 12px;
+      cursor: pointer;
+      transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      text-align: center;
+    }
+    .card:hover { transform: translateY(-2px); border-color: rgba(232,184,74,0.45); }
+    .card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(232,184,74,0.35);
+    }
+    .icon {
+      width: 88px; height: 88px;
+      border-radius: 12px;
+      background: linear-gradient(145deg, #2a2a32, #16161c);
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+    }
+    .icon img { width: 78%; height: 78%; object-fit: contain; }
+    .name { font-weight: 700; font-size: 14px; }
+    .desc { font-size: 11px; color: var(--hint); line-height: 1.3; min-height: 2.6em; }
+    .actions { margin-top: 20px; display: flex; flex-wrap: wrap; gap: 8px; }
+    button {
+      padding: 11px 16px; border-radius: 10px; border: none;
+      background: var(--btn); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    button.sec { background: #33333f; }
+    button:disabled { opacity: 0.45; cursor: default; }
+    .foot { margin-top: 24px; font-size: 11px; color: var(--hint); line-height: 1.4; }
+    code { background: #222; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>🎨 Паки текстур</h1>
+  <p class="sub">Выбери набор фигур для Chaos Chess. Выбор сохраняется на этом сайте и передаётся в игру.</p>
+  <div id="status" class="status empty">Загрузка…</div>
+  <div id="grid" class="grid"></div>
+  <div class="actions">
+    <button type="button" id="btn-apply" disabled>Применить в игре</button>
+    <button type="button" id="btn-reset" class="sec">Сбросить (стандарт)</button>
+  </div>
+  <p class="foot">
+    Паки лежат в <code>packs/&lt;id&gt;/</code>. Добавь папку с <code>pack.json</code> и файлами, затем допиши пак в <code>packs.json</code>.
+    Иконка пака — случайная текстура из него (меняется при каждом заходе).
+  </p>
+
+<script>
+(function(){
+  const STORAGE_KEY = 'chaos_tex_pack';
+  // Куда возвращаться в игру. Можно передать ?return=URL
+  const params = new URLSearchParams(location.search);
+  const RETURN_URL = params.get('return') || 'https://darkstalke5r.github.io/ChessRandom/';
+
+  const statusEl = document.getElementById('status');
+  const grid = document.getElementById('grid');
+  const btnApply = document.getElementById('btn-apply');
+  const btnReset = document.getElementById('btn-reset');
+
+  let packs = [];
+  let selected = null;
+
+  function loadSaved(){
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
+    catch(e){ return null; }
+  }
+  function savePack(pack){
+    if(!pack){
+      try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
+      selected = null;
+    } else {
+      const base = new URL(pack.path, location.href).href;
+      selected = {
+        id: pack.id,
+        name: pack.name,
+        base: base.endsWith('/') ? base : base + '/',
+        map: pack.map || {},
+        files: pack.files || []
+      };
+      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(selected)); }catch(e){}
+    }
+    updateStatus();
+    render();
+  }
+
+  function updateStatus(){
+    if(!selected){
+      statusEl.className = 'status empty';
+      statusEl.textContent = 'Сейчас: стандартные фигуры игры (пак не выбран)';
+      btnApply.disabled = true;
+    } else {
+      statusEl.className = 'status';
+      statusEl.textContent = 'Выбрано: «' + selected.name + '» (' + selected.id + ')';
+      btnApply.disabled = false;
+    }
+  }
+
+  function randomIcon(pack){
+    const files = pack.files || [];
+    if(!files.length) return null;
+    const f = files[Math.floor(Math.random() * files.length)];
+    return pack.path + (pack.path.endsWith('/') ? '' : '/') + f;
+  }
+
+  function render(){
+    grid.innerHTML = '';
+    packs.forEach(pack => {
+      const card = document.createElement('div');
+      card.className = 'card' + (selected && selected.id === pack.id ? ' selected' : '');
+      const icon = document.createElement('div');
+      icon.className = 'icon';
+      const src = randomIcon(pack);
+      if(src){
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = pack.name;
+        img.onerror = ()=>{ img.remove(); icon.textContent = '♟'; };
+        icon.appendChild(img);
+      } else icon.textContent = '♟';
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = pack.name;
+      const desc = document.createElement('div');
+      desc.className = 'desc';
+      desc.textContent = pack.desc || '';
+      card.appendChild(icon);
+      card.appendChild(name);
+      card.appendChild(desc);
+      card.onclick = ()=> savePack(pack);
+      grid.appendChild(card);
+    });
+  }
+
+  btnReset.onclick = ()=> savePack(null);
+
+  btnApply.onclick = ()=>{
+    if(!selected) return;
+    // Передаём выбор в игру через hash (работает между разными GitHub Pages)
+    const payload = {
+      id: selected.id,
+      name: selected.name,
+      base: selected.base,
+      map: selected.map || {}
+    };
+    let b64;
+    try {
+      b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
+        .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+    } catch(e){ alert('Не удалось закодировать выбор'); return; }
+    const url = RETURN_URL.replace(/#.*$/,'') + '#texpack=' + b64;
+    location.href = url;
+  };
+
+  fetch('packs.json', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(data => {
+      packs = (data && data.packs) || [];
+      const saved = loadSaved();
+      if(saved && packs.some(p => p.id === saved.id)) selected = saved;
+      else selected = saved; // keep even if list changed
+      updateStatus();
+      render();
+    })
+    .catch(err => {
+      statusEl.className = 'status empty';
+      statusEl.textContent = 'Не удалось загрузить packs.json: ' + err.message;
+    });
+})();
+</script>
+</body>
+</html>
